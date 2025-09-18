@@ -22,6 +22,7 @@
   },
   "scripts": {
     "build": "node esbuild.mjs",
+    "build:static": "node build-static.mjs",
     "s": "npx http-server -o ./example"
   },
   "repository": {
@@ -46,5 +47,8 @@
   "devDependencies": {
     "esbuild": "^0.25.4",
     "http-server": "^14.1.1"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
   }
 }
