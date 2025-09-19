@@ -275,18 +275,16 @@ async function processBatchConversion(fileItems) {
             const originalFileName = fileItem.file.name
             const newFileName = getNewFileName(originalFileName, excelMapping)
 
+            // Store original info for tracking
+            fileItem.originalName = originalFileName
+            fileItem.finalName = newFileName
+
             // Create a new file object with the renamed filename if mapping exists
-            let processedFile = fileItem.file
             if (newFileName !== originalFileName) {
-                // Create new file with renamed filename
-                processedFile = new File([fileItem.file], newFileName, {
+                fileItem.file = new File([fileItem.file], newFileName, {
                     type: fileItem.file.type,
                     lastModified: fileItem.file.lastModified
                 })
-
-                // Update the fileItem
-                fileItem.file = processedFile
-                fileItem.originalName = originalFileName
                 fileItem.renamedFrom = originalFileName
             }
 
@@ -314,10 +312,10 @@ async function processBatchConversion(fileItems) {
 
         for (let i = 0; i < heicFiles.length; i++) {
             const fileItem = heicFiles[i]
-            const fileName = fileItem.file.name
+            const finalFileName = fileItem.finalName
 
             try {
-                updateProgress(i + 1, heicFiles.length, `Converting ${fileName}...`)
+                updateProgress(i + 1, heicFiles.length, `Converting ${finalFileName}...`)
 
                 const convertedBlob = await heicTo({
                     blob: fileItem.file,
@@ -325,12 +323,14 @@ async function processBatchConversion(fileItems) {
                     quality: 0.8
                 })
 
-                const outputFileName = fileName.replace(/\.(heic|heif)$/i, '.jpg')
+                // Use the final name (renamed) and convert extension to .jpg
+                const baseName = finalFileName.replace(/\.(heic|heif)$/i, '')
+                const outputFileName = baseName + '.jpg'
                 const zipPath = fileItem.relativePath + outputFileName
 
                 zip.file(zipPath, convertedBlob)
                 convertedFiles.push({
-                    original: fileItem.renamedFrom || fileName,
+                    original: fileItem.originalName,
                     converted: outputFileName,
                     originalSize: fileItem.file.size,
                     convertedSize: convertedBlob.size,
@@ -340,28 +340,29 @@ async function processBatchConversion(fileItems) {
                 if (fileItem.renamedFrom) {
                     renamedFiles.push({
                         from: fileItem.renamedFrom,
-                        to: fileName
+                        to: outputFileName // Show the final output name
                     })
                 }
 
             } catch (error) {
-                console.error(`Failed to convert ${fileName}:`, error)
+                console.error(`Failed to convert ${finalFileName}:`, error)
                 failedFiles.push({
-                    name: fileName,
+                    name: finalFileName,
                     error: error.message
                 })
             }
         }
 
-        // Add non-HEIC image files to ZIP as-is
+        // Add non-HEIC image files to ZIP as-is with renamed names
         for (const fileItem of nonHeicFiles) {
-            const zipPath = fileItem.relativePath + fileItem.file.name
+            const finalFileName = fileItem.finalName
+            const zipPath = fileItem.relativePath + finalFileName
             zip.file(zipPath, fileItem.file)
 
             if (fileItem.renamedFrom) {
                 renamedFiles.push({
                     from: fileItem.renamedFrom,
-                    to: fileItem.file.name
+                    to: finalFileName
                 })
             }
         }
@@ -509,7 +510,11 @@ async function handleSingleFile(file) {
             const infoDiv = document.createElement('div')
             infoDiv.style.marginTop = '15px'
             infoDiv.style.textAlign = 'center'
-            const downloadFileName = processedFile.name.replace(/\.[^/.]+$/, '') + '.jpg'
+
+            // Use the renamed filename for the download, strip extension and add .jpg
+            const baseName = processedFile.name.replace(/\.[^/.]+$/, '')
+            const downloadFileName = baseName + '.jpg'
+
             infoDiv.innerHTML = `
         <div style="color: #666; font-size: 0.9rem; margin-bottom: 10px;">
           JPEG • ${formatFileSize(convertedBlob.size)} • ${conversionTime}ms
