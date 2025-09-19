@@ -3,7 +3,6 @@ import {heicTo, isHeic} from '../dist/heic-to.js'
 const filesInput = document.getElementById("filesInput")
 const folderInput = document.getElementById("folderInput")
 const excelInput = document.getElementById("excelInput")
-const resetButton = document.getElementById("resetButton")
 const statusMessage = document.getElementById("statusMessage")
 const resultContainer = document.getElementById("resultContainer")
 const originalImage = document.getElementById("originalImage")
@@ -60,7 +59,7 @@ async function loadJSZip() {
 }
 
 function showStatus(message, type = 'info') {
-    statusMessage.textContent = message
+    statusMessage.innerHTML = message // Changed from textContent to innerHTML
     statusMessage.className = `status-message ${type}`
     statusMessage.style.display = 'block'
 }
@@ -149,9 +148,16 @@ async function parseExcelFile(file) {
         const rows = doc.getElementsByTagName('row')
 
         const mapping = new Map()
+        const keyTracker = new Map() // Track first occurrence of each key
+        const skippedRows = []
+        const duplicateRows = []
+        let validPairs = 0
 
         // Process rows to extract column Q (17) and R (18) data
-        for (const row of rows) {
+        // Skip the first row (index 0) assuming it's a header row
+        for (let i = 1; i < rows.length; i++) {
+            const row = rows[i]
+            const rowNumber = row.getAttribute('r') || (i + 1) // Get actual row number from Excel
             const cells = row.getElementsByTagName('c')
             let columnQValue = ''
             let columnRValue = ''
@@ -181,16 +187,92 @@ async function parseExcelFile(file) {
                 }
             }
 
-            // Add mapping if both values exist
+            // Process row if both values exist and are not empty
             if (columnQValue && columnRValue) {
+                validPairs++
+
+                // Check for duplicates
+                if (mapping.has(columnQValue)) {
+                    const firstOccurrence = keyTracker.get(columnQValue)
+                    duplicateRows.push({
+                        row: rowNumber,
+                        columnQ: columnQValue,
+                        columnR: columnRValue,
+                        previousValue: mapping.get(columnQValue),
+                        firstRow: firstOccurrence.row,
+                        firstValue: firstOccurrence.value
+                    })
+                } else {
+                    // Track first occurrence
+                    keyTracker.set(columnQValue, {
+                        row: rowNumber,
+                        value: columnRValue
+                    })
+                }
+
                 mapping.set(columnQValue, columnRValue)
+            } else {
+                // Track skipped rows
+                const missingColumns = []
+                if (!columnQValue) missingColumns.push('Q')
+                if (!columnRValue) missingColumns.push('R')
+
+                skippedRows.push({
+                    row: rowNumber,
+                    missing: missingColumns,
+                    columnQ: columnQValue || '(empty)',
+                    columnR: columnRValue || '(empty)'
+                })
             }
         }
 
         if (mapping.size === 0) {
             showStatus('⚠️ No file mappings found in Excel columns Q and R', 'warning')
         } else {
-            showStatus(`✅ Loaded ${mapping.size} file mappings from Excel`, 'success')
+            // Determine status type based on issues
+            let statusType = 'success'
+            let statusMsg = `✅ Loaded ${mapping.size} file mappings from Excel`
+
+            const issues = []
+            if (skippedRows.length > 0) {
+                issues.push(`${skippedRows.length} rows skipped due to missing values`)
+            }
+            if (duplicateRows.length > 0) {
+                issues.push(`${duplicateRows.length} filename conflicts`)
+                statusType = 'error' // Show as error if duplicates found
+                statusMsg = `⚠️ Loaded ${mapping.size} file mappings from Excel with conflicts`
+            }
+
+            if (issues.length > 0) {
+                statusMsg += ` (${issues.join(', ')})`
+
+                // Add detailed information
+                let details = ''
+                if (skippedRows.length > 0) {
+                    details += showSkippedRowsDetails(skippedRows, 'Excel')
+                }
+                if (duplicateRows.length > 0) {
+                    details += showDuplicateDetails(duplicateRows, 'Excel')
+                }
+                statusMsg += details
+            }
+
+            showStatus(statusMsg, statusType)
+        }
+
+        // Console logging for developers
+        if (skippedRows.length > 0) {
+            console.log(`📋 Skipped ${skippedRows.length} Excel rows:`)
+            skippedRows.forEach(skip => {
+                console.log(`Row ${skip.row}: Missing column(s) ${skip.missing.join(', ')} - Q: "${skip.columnQ}", R: "${skip.columnR}"`)
+            })
+        }
+
+        if (duplicateRows.length > 0) {
+            console.log(`📋 Found ${duplicateRows.length} duplicate keys:`)
+            duplicateRows.forEach(dup => {
+                console.log(`Row ${dup.row}: Key "${dup.columnQ}" already exists (first: row ${dup.firstRow} → "${dup.firstValue}", current: "${dup.columnR}")`)
+            })
         }
 
         return mapping
@@ -202,33 +284,57 @@ async function parseExcelFile(file) {
     }
 }
 
-async function parseCSVFile(file) {
-    try {
-        const text = await file.text()
-        const lines = text.split('\n')
-        const mapping = new Map()
+function showSkippedRowsDetails(skippedRows, fileType) {
+    if (skippedRows.length === 0) return ''
 
-        for (const line of lines) {
-            const columns = line.split(',').map(col => col.trim().replace(/"/g, ''))
+    const maxRowsToShow = 5 // Limit display to avoid overwhelming users
+    const displayRows = skippedRows.slice(0, maxRowsToShow)
+    const hasMore = skippedRows.length > maxRowsToShow
 
-            // Assuming columns Q and R are at indices 16 and 17 (0-based)
-            if (columns.length >= 18) {
-                const columnQ = columns[16]
-                const columnR = columns[17]
-
-                if (columnQ && columnR) {
-                    mapping.set(columnQ, columnR)
-                }
-            }
+    let details = `<details style="margin-top: 10px; font-size: 0.9rem;">
+        <summary style="cursor: pointer; color: #f39c12;">
+            ⚠️ ${skippedRows.length} ${fileType} rows skipped - click to view details
+        </summary>
+        <div style="margin-top: 8px; padding: 8px; background: #fff3cd; border-radius: 4px; font-family: monospace; font-size: 0.85rem;">
+            ${displayRows.map(skip => {
+        if (skip.reason) {
+            return `Line ${skip.row}: ${skip.reason}`
+        } else {
+            return `Row ${skip.row}: Missing ${skip.missing.join(', ')} - Q: "${skip.columnQ}", R: "${skip.columnR}"`
         }
+    }).join('<br>')}
+            ${hasMore ? `<br><em>... and ${skippedRows.length - maxRowsToShow} more rows</em>` : ''}
+        </div>
+    </details>`
 
-        return mapping
+    return details
+}
 
-    } catch (error) {
-        console.error('CSV parsing error:', error)
-        showStatus(`❌ Failed to parse CSV file: ${error.message}`, 'error')
-        return new Map()
-    }
+function showDuplicateDetails(duplicateRows, fileType) {
+    if (duplicateRows.length === 0) return ''
+
+    const maxRowsToShow = 5 // Limit display to avoid overwhelming users
+    const displayRows = duplicateRows.slice(0, maxRowsToShow)
+    const hasMore = duplicateRows.length > maxRowsToShow
+
+    let details = `<details style="margin-top: 10px; font-size: 0.9rem;">
+        <summary style="cursor: pointer; color: #e74c3c; font-weight: 600;">
+            ❌ ${duplicateRows.length} conflicting filename(s) - click to view details
+        </summary>
+        <div style="margin-top: 8px; padding: 8px; background: #f8d7da; border-radius: 4px; font-family: monospace; font-size: 0.85rem; color: #721c24;">
+            <strong>The same source file appears multiple times with different target names:</strong><br><br>
+            ${displayRows.map(dup => {
+        return `<strong>"${dup.columnQ}"</strong> appears in:<br>` +
+            `• Row ${dup.firstRow}: rename to "${dup.firstValue}" (first occurrence)<br>` +
+            `• Row ${dup.row}: rename to "${dup.columnR}" (duplicate)<br>` +
+            `<em>→ Using: "${dup.columnR}" (last occurrence wins)</em><br><br>`
+    }).join('')}
+            ${hasMore ? `<em>... and ${duplicateRows.length - maxRowsToShow} more conflicts</em><br>` : ''}
+            <strong>Action needed:</strong> Remove duplicate rows or decide which target name to use for each source file.
+        </div>
+    </details>`
+
+    return details
 }
 
 function getNewFileName(originalFileName, mapping) {
@@ -388,13 +494,19 @@ async function processBatchConversion(fileItems) {
 }
 
 function showBatchResults(convertedFiles, failedFiles, otherFiles, zipBlob, renamedFiles = []) {
+    // Calculate breakdown
+    const totalProcessed = convertedFiles.length + otherFiles + failedFiles.length
+    const renamedHeicFiles = convertedFiles.filter(f => f.wasRenamed).length
+    const renamedOtherFiles = renamedFiles.length - renamedHeicFiles
+
     originalImage.innerHTML = `
     <div style="padding: 20px; text-align: center;">
       <div style="font-size: 3rem; margin-bottom: 10px;">📁</div>
       <div style="font-weight: bold; margin-bottom: 10px;">Batch Conversion Results</div>
       <div style="color: #666; font-size: 0.9rem; line-height: 1.5;">
         <div>✅ ${convertedFiles.length} HEIC files converted</div>
-        ${renamedFiles.length > 0 ? `<div>🏷️ ${renamedFiles.length} files renamed</div>` : ''}
+        ${otherFiles > 0 ? `<div>📷 ${otherFiles} other image files included</div>` : ''}
+        ${renamedFiles.length > 0 ? `<div>🏷️ ${renamedFiles.length} files renamed (${renamedHeicFiles} HEIC, ${renamedOtherFiles} other)</div>` : ''}
         ${failedFiles.length > 0 ? `<div style="color: #dc3545;">❌ ${failedFiles.length} files failed</div>` : ''}
       </div>
     </div>
@@ -437,15 +549,20 @@ function showBatchResults(convertedFiles, failedFiles, otherFiles, zipBlob, rena
     showResult()
 
     const successCount = convertedFiles.length + otherFiles
-    const totalFiles = successCount + failedFiles.length
 
     if (failedFiles.length > 0) {
         showStatus(
-            `⚠️ Processed ${successCount}/${totalFiles} files. ${failedFiles.length} files failed to convert.`,
+            `⚠️ Processed ${successCount}/${totalProcessed} files. ${failedFiles.length} files failed to convert.`,
             'warning'
         )
     } else {
-        let message = `🎉 Successfully processed all ${totalFiles} files!`
+        let message = `🎉 Successfully processed all ${totalProcessed} files!`
+        if (convertedFiles.length > 0) {
+            message += ` ${convertedFiles.length} HEIC files converted.`
+        }
+        if (otherFiles > 0) {
+            message += ` ${otherFiles} other files included.`
+        }
         if (renamedFiles.length > 0) {
             message += ` ${renamedFiles.length} files were renamed using Excel mappings.`
         }
